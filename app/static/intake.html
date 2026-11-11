@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>证据接收页 · 取证证据接收系统</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body data-page="intake">
+  <header class="topbar">
+    <div class="brand">🛡️ 取证证据接收系统</div>
+    <nav>
+      <a href="/">首页 / 已发布版本</a>
+      <a href="/intake" class="active">证据接收页</a>
+    </nav>
+  </header>
+
+  <main class="container narrow">
+    <section class="card">
+      <h2>证据接收</h2>
+      <p class="hint">
+        全部核验通过后才会发布新版本；任何失败都不会改变当前版本，也不会残留半包文件。
+        解压内容累计上限 16 MiB（按实际字节统计）。
+      </p>
+      <form id="intake-form">
+        <label>
+          案件号
+          <input name="case_id" required pattern="[A-Za-z0-9_-]{1,64}"
+                 placeholder="例如 CASE-2026-001" />
+        </label>
+        <label>
+          预期当前版本（首次提交为 0）
+          <input name="expected_version" type="number" min="0" step="1" required value="0" />
+        </label>
+        <label>
+          取证包 ZIP（仅普通文件、ASCII 相对路径）
+          <input name="zip_file" type="file" accept=".zip,application/zip" required />
+        </label>
+        <label>
+          独立 JSON 清单（相对路径 + SHA-256）
+          <input name="manifest_file" type="file" accept=".json,application/json" required />
+        </label>
+        <button type="submit" id="submit-btn">提交核验并发布</button>
+      </form>
+      <div id="result" class="result" hidden></div>
+    </section>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

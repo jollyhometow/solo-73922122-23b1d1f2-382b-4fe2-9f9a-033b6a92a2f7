@@ -1,176 +1,114 @@
-# 防火墙规则变更核对工具
+# 取证证据接收系统（Evidence Intake）
 
-网络运维人员上线防火墙变更前，用本工具核对两份有序规则（变更前 / 变更后）之间
-**哪些连接被意外开放（新增放行）或阻断（新增阻断）**。
+应急响应场景下安全接收外包取证包的 Web 服务。分析员在接收页填写案件号与
+**预期当前版本**（首次为 `0`），上传取证 ZIP 与独立 JSON 清单；服务端对
+路径、条目类型、实际内容大小与 SHA-256 逐项核验，**全部通过才发布新版本**，
+任何失败都不会改变当前版本，也不会在磁盘上暴露半包数据。
 
-- 后端：FastAPI + 纯 Python 区间计算引擎（不逐个枚举 IP）
-- 前端：原生 HTML / CSS / JavaScript，无构建步骤
-- 部署：Docker Compose 一键启动
-- 规则模型：源 IPv4 CIDR、目标 IPv4 CIDR、TCP 目标端口闭区间、允许（allow）/ 拒绝（deny）
-- 匹配语义：**首条命中生效，未命中默认拒绝**；每份规则表最多 20 条
+## 威胁模型与安全保证
 
-## 快速开始（Docker Compose）
+取证包来自不可信外部人员，ZIP 与清单均为攻击面，服务端不信任任何声明字段。
 
-```bash
-docker compose up --build
-```
+### 路径与条目校验（`app/security.py`）
 
-打开浏览器访问 <http://localhost:8000> 。页面打开时会自动载入一份可编辑示例，
-可直接点“开始核对”，也可在表格中增删、上移/下移（调整规则顺序）、修改任意字段后再核对。
+* 条目名仅允许 ASCII；拒绝非 ASCII 名称。
+* 拒绝绝对路径（`/...`）、Windows 盘符（`C:...`）、反斜杠、空分量
+  （`a//b`、首尾斜杠）、`.` 与 `..` 分量。
+* 拒绝重复路径、文件/目录冲突（同时存在 `a` 与 `a/b`）。
+* ZIP 仅接受普通文件：拒绝目录条目、Unix 软链接（`S_IFLNK`）、
+  FIFO/设备等非常规文件、加密条目。
+* 解压目标使用 `O_CREAT|O_EXCL` 打开，不会覆盖任何既有文件。
 
-停止：
+### 分块解压与 16 MiB 上限
 
-```bash
-docker compose down
-```
+* 64 KiB 分块流式读取，**按实际读出的字节**累计计数，达到
+  `16 MiB + 1` 字节即中止；ZIP 头部声明的 `file_size` 不参与判断，
+  因此高压缩比 zip-bomb（16 KiB 压缩 → 16 MiB+ 解压）同样被拒。
+* 解压同时实时计算 SHA-256；`zipfile` 在流关闭时自动做 CRC-32 完整性校验。
+* 解压中途失败会删除已落盘的半截文件。
 
-## 本地直接运行（不用 Docker）
+### 清单与文件一一对应（`app/manifest.py` + `app/storage.py`）
 
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-## 页面功能
-
-- 两张可编辑规则表：旧规则（变更前）、新规则（变更后），各最多 20 条
-- 每行可编辑源/目标 IPv4 CIDR、端口下限/上限（闭区间，0–65535）、动作
-- ↑ / ↓ 按钮调整规则顺序（顺序即匹配优先级），可删除、添加规则
-- 核对结果分两栏展示：
-  - **新增放行区域**：旧侧拒绝（含默认拒绝）→ 新侧允许
-  - **新增阻断区域**：旧侧允许 → 新侧拒绝
-- 每个区域以**互不重叠的源地址段 × 目标地址段 × 端口段**组合表示，完整覆盖全部差异连接：
-  - 地址段显示为 `起始 IP – 结束 IP`，并附最少 CIDR 分解（单个 CIDR 时只显示 CIDR）
-  - 端口段为闭区间，单端口只显示一个数字
-  - 区域连接总数 = 源 IP 数 × 目标 IP 数 × 端口数
-  - 附一条**示例连接**（取各段最小值），以及该连接在**旧规则侧、新规则侧分别命中的规则编号与内容**；
-    未命中任何规则时明确标注“默认拒绝”
-- 顶部汇总：空间切分单元数、两类区域数量与覆盖连接总数
-
-## 计算原理（按区间，不枚举 IP）
-
-整个连接空间是三维笛卡尔积：`IPv4 源地址 × IPv4 目标地址 × TCP 端口 0..65535`。
-
-1. **边界切分**：收集旧、新两份规则在三个维度上的所有区间边界，把全空间切成一组
-   互不重叠的基本区间。每个基本区间内，任意规则对它的“包含/不包含”关系恒定。
-2. **首条命中求值**：对每个三维基本单元，分别按旧表、新表从上到下做首条命中求值，
-   未命中记为默认拒绝（deny）。比较的是单元的**实际动作**（allow/deny），
-   因此“旧表 #3 deny、新表 #5 deny”这类规则编号变化但动作不变的情况不会误报。
-3. **差异筛选**：仅保留动作翻转的单元（deny→allow 为新增放行，allow→deny 为新增阻断）。
-4. **贪心矩形合并**：按端口轴 → 目标地址轴 → 源地址轴的顺序，把相邻且判定一致的
-   单元合并成长方体。每个单元只被一个区域消费，所以输出区域**互不重叠且完整覆盖**
-   全部差异连接。
-5. **地址段展示**：区间基于 CIDR 边界切分，必然可以精确分解为 CIDR；分解取最少 CIDR 集合
-   （例如 `192.168.0.0 – 192.168.1.255` 显示为单个 `192.168.0.0/23`）。
-
-整个过程只对“区间”做集合运算，从不逐个枚举 IP 地址。最坏情况（两侧各 20 条、
-边界高度交错）约产生数十万级基本单元，常规硬件数秒内完成。
-
-## HTTP API
-
-### `POST /api/analyze`
-
-请求体：
+独立 JSON 清单格式：
 
 ```json
 {
-  "old_rules": [
-    {"src_cidr": "10.10.0.0/16", "dst_cidr": "172.16.5.0/24",
-     "port_low": 80, "port_high": 443, "action": "allow"},
-    {"src_cidr": "0.0.0.0/0", "dst_cidr": "0.0.0.0/0",
-     "port_low": 0, "port_high": 65535, "action": "deny"}
-  ],
-  "new_rules": [
-    {"src_cidr": "10.10.0.0/16", "dst_cidr": "172.16.5.0/24",
-     "port_low": 3306, "port_high": 3306, "action": "allow"},
-    {"src_cidr": "0.0.0.0/0", "dst_cidr": "0.0.0.0/0",
-     "port_low": 0, "port_high": 65535, "action": "deny"}
+  "files": [
+    {"path": "report/notes.txt", "sha256": "<64位十六进制>"},
+    {"path": "evidence/a.bin", "sha256": "<64位十六进制>"}
   ]
 }
 ```
 
-响应（节选）：
+* 清单路径走与 ZIP 完全相同的相对路径规则，清单自身也不允许重复/冲突。
+* 发布前要求清单与 ZIP 的路径集合**完全相等**，且每个文件实际计算的
+  SHA-256 与清单声明一致；任一不符即整体拒绝。
 
-```json
-{
-  "newly_allowed": [
-    {
-      "id": 1,
-      "category": "newly_allowed",
-      "src_segment": {"start": "10.10.0.0", "end": "10.10.255.255",
-                      "cidrs": ["10.10.0.0/16"], "label": "10.10.0.0/16"},
-      "dst_segment": {"start": "172.16.5.0", "end": "172.16.5.255",
-                      "cidrs": ["172.16.5.0/24"], "label": "172.16.5.0/24"},
-      "port_segment": {"low": 3306, "high": 3306, "label": "3306"},
-      "connection_count": 4194304,
-      "sample_connection": {"src_ip": "10.10.0.0", "dst_ip": "172.16.5.0",
-                            "dst_port": 3306,
-                            "label": "10.10.0.0:3306 → 172.16.5.0:3306 (TCP)"},
-      "old_side": {"kind": "rule",
-                   "label": "#2 deny 0.0.0.0/0 → 0.0.0.0/0 端口 0-65535",
-                   "rule": {"index": 2, "action": "deny", "...": "..."}},
-      "new_side": {"kind": "rule",
-                   "label": "#1 allow 10.10.0.0/16 → 172.16.5.0/24 端口 3306-3306",
-                   "rule": {"index": 1, "action": "allow", "...": "..."}}
-    }
-  ],
-  "newly_blocked": [],
-  "stats": {"grid_cells": 27, "src_segments": 3, "dst_segments": 3,
-            "port_segments": 3, "allowed_region_count": 1, "blocked_region_count": 0,
-            "allowed_connection_count": 4194304, "blocked_connection_count": 0}
-}
+### 原子发布与并发控制（`app/storage.py`）
+
+* SQLite 开启 WAL；写事务一律 `BEGIN IMMEDIATE` 立即取锁，配合
+  `busy_timeout` 与应用层短重试。
+* **乐观版本号**：提交时携带预期当前版本，事务内重新读取比对。
+  两个进程同时基于同一版本提交时，先拿锁的发布成功（版本 +1），
+  后者读到新版本后返回 `409 Conflict`，当前版本不变。
+* 文件先 `rename` 进不可变目录 `files/<case>/v<n>/`，再提交数据库事务；
+  提交失败回收该目录。已发布版本目录永不改写，后续发布不影响旧版内容。
+* 启动时通过 `flock` 互斥锁执行一次清理：清空暂存区/临时上传区，
+  并删除“磁盘存在但数据库无记录”的孤儿版本目录——进程在任意时刻
+  被杀死，重启后都不会暴露半包。
+
+## 存储布局（`EVIDENCE_HOME`，默认 `./data`）
+
+```
+data/
+├── evidence.db            # SQLite：cases / versions / files 三张表
+├── files/<case_id>/v<n>/  # 已发布的不可变版本目录（附件原件）
+├── staging/<uuid>/        # 每次接收的独立暂存区（结束即删）
+└── tmp/                   # 上传临时文件（请求结束即删）
 ```
 
-未命中规则时 `old_side` / `new_side` 的 `kind` 为 `default_deny`，
-`label` 为“默认拒绝（未命中任何规则）”，`rule` 为 `null`。
-
-其他端点：
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/` | 核对页面 |
-| GET | `/api/example` | 内置可编辑示例数据 |
-| GET | `/health` | 健康检查（Compose 健康探测使用） |
-| GET | `/docs` | FastAPI 自动生成的 Swagger 文档 |
-
-错误约定：请求体结构/字段非法返回 `422`；CIDR 不合法（如主机位非零、IPv6）等
-语义错误返回 `400`，响应均为 `{"detail": "..."}`。
-
-## 测试
+## 运行：Docker Compose（两个进程）
 
 ```bash
-pip install -r requirements.txt pytest httpx
-python -m pytest tests/ -q
+docker compose up --build
+# 浏览器打开 http://localhost:8000
 ```
 
-测试包含三类：
+容器以 `gunicorn --workers 2 --worker-class uvicorn.workers.UvicornWorker`
+启动，即**两个独立服务进程**共享同一命名卷 `/data` 与同一个 SQLite 数据库。
+`/health` 返回的 `pid` 可用于确认请求确实落在不同进程上。
 
-1. 引擎单元测试：CIDR 区间分解、严格校验、首条命中、默认拒绝、区域合并不重叠等
-2. API 测试：路由、状态码、校验错误、示例端到端
-3. **差分测试**（`tests/test_bruteforce_diff.py`）：在微型 CIDR 空间上暴力枚举每个
-   连接的两侧判定，断言引擎输出的每个变化连接恰好属于一个区域、未变化连接不属于任何区域、
-   连接总数与暴力结果一致（暴力枚举仅存在于测试中）
+## 页面与 API
 
-## 目录结构
+| 页面/接口 | 说明 |
+| --- | --- |
+| `GET /` | 首页：已发布案件/版本清单、样例下载入口、进入接收页的导航 |
+| `GET /intake` | 证据接收页：案件号 + 预期当前版本 + ZIP + JSON 清单 |
+| `POST /api/intake` | 接收主流程，成功 `201`，核验失败 `400`，版本冲突 `409` |
+| `GET /api/cases` / `GET /api/cases/{id}` | 版本清单与案件详情 |
+| `GET /api/cases/{id}/versions/{v}/files/{rel_path}` | 附件**强制 attachment 下载**，响应头带 `X-SHA256` |
+| `GET /api/samples` 及 `.../{id}/bundle`、`.../{id}/manifest` | 演示样例 |
 
+### 演示样例（首页可直接下载）
+
+1. **正常样例** `benign`：结构与哈希全部正确，可成功发布；
+2. **恶意样例** `malicious`：ZIP 内含软链接 `evil-link → /etc/passwd`
+   与 `../pwned.txt` 路径穿越条目，解压阶段即被拒绝；
+3. **篡改样例** `tampered`：ZIP 结构合法但清单 SHA-256 与实际内容不符，
+   哈希核验阶段被拒绝。
+
+建议演示案件号分别使用 `DEMO-BENIGN`、`DEMO-EVIL`、`DEMO-TAMPER`，
+首次提交“预期当前版本”填 `0`。
+
+## 本地开发与测试
+
+```bash
+pip install -r requirements.txt
+pytest -q                      # 61 个测试，含跨进程并发与崩溃恢复
+gunicorn app.main:app --workers 2 \
+  --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
-.
-├── app/
-│   ├── main.py              # FastAPI 入口与路由
-│   ├── engine.py            # 区间化差异核对引擎
-│   ├── schemas.py           # Pydantic 请求模型与校验
-│   ├── example.py           # 页面内置示例
-│   └── static/              # 前端页面（index.html / styles.css / app.js）
-├── tests/                   # pytest 测试（含暴力差分测试）
-├── Dockerfile
-├── docker-compose.yml
-└── requirements.txt
-```
 
-## 边界与约束
-
-- 仅支持 IPv4；CIDR 使用严格解析（`10.0.0.1/24` 这类主机位非零写法会被拒绝）
-- 端口为 TCP 目标端口闭区间，范围 0–65535
-- 规则按输入顺序匹配，首条命中生效；全部未命中时默认拒绝
-- 每份规则表最多 20 条；空规则表是合法输入（等价于“全默认拒绝”）
+测试覆盖：路径/条目拒绝矩阵、16 MiB 实际字节边界、清单一一对应与哈希、
+上传下载全链路、旧版本不可变、线程与**多进程**并发仅一份成功、
+启动孤儿目录清理、失败后无暂存残留。

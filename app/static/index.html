@@ -1,95 +1,57 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>防火墙规则变更核对工具</title>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>取证证据接收系统</title>
   <link rel="stylesheet" href="/static/styles.css" />
 </head>
-<body>
-  <header class="page-header">
-    <h1>防火墙规则变更核对工具</h1>
-    <p class="subtitle">
-      录入变更单中的旧、新两份有序规则（首条命中生效，未命中默认拒绝），
-      工具按区间计算全部连接中的<strong>新增放行</strong>与<strong>新增阻断</strong>区域，
-      以互不重叠的源地址段 × 目标地址段 × 端口段完整展示，并附示例连接与两侧命中规则。
-    </p>
+<body data-page="home">
+  <header class="topbar">
+    <div class="brand">🛡️ 取证证据接收系统</div>
+    <nav>
+      <a href="/" class="active">首页 / 已发布版本</a>
+      <a href="/intake">证据接收页</a>
+    </nav>
   </header>
 
-  <main>
-    <section class="toolbar">
-      <button id="btn-example" type="button" class="btn btn-secondary">载入可编辑示例</button>
-      <button id="btn-clear" type="button" class="btn btn-secondary">清空</button>
-      <button id="btn-analyze" type="button" class="btn btn-primary">开始核对</button>
-      <span class="hint">每份规则表最多 20 条，规则从上到下依次匹配，首条命中生效。</span>
+  <main class="container">
+    <section class="card">
+      <h2>已发布版本清单</h2>
+      <p class="hint">每个案件的已发布版本不可变；新版本不会改变旧版内容，附件仅作下载。</p>
+      <table id="cases-table">
+        <thead>
+          <tr>
+            <th>案件号</th>
+            <th>当前版本</th>
+            <th>当前版文件数</th>
+            <th>当前版总大小</th>
+            <th>最近更新 (UTC)</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p id="cases-empty" class="hint" hidden>暂无已发布案件，前往「证据接收页」提交第一个取证包。</p>
     </section>
 
-    <div id="error-banner" class="error-banner" hidden></div>
-
-    <section class="rule-panels">
-      <div class="panel">
-        <div class="panel-head">
-          <h2>旧规则（变更前）</h2>
-          <button type="button" class="btn btn-small" data-add="old_rules">+ 添加规则</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th class="col-order">#</th>
-                <th>源 IPv4 CIDR</th>
-                <th>目标 IPv4 CIDR</th>
-                <th class="col-port">端口下限</th>
-                <th class="col-port">端口上限</th>
-                <th class="col-action">动作</th>
-                <th class="col-ops">操作</th>
-              </tr>
-            </thead>
-            <tbody id="tbody-old_rules"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <div class="panel">
-        <div class="panel-head">
-          <h2>新规则（变更后）</h2>
-          <button type="button" class="btn btn-small" data-add="new_rules">+ 添加规则</button>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th class="col-order">#</th>
-                <th>源 IPv4 CIDR</th>
-                <th>目标 IPv4 CIDR</th>
-                <th class="col-port">端口下限</th>
-                <th class="col-port">端口上限</th>
-                <th class="col-action">动作</th>
-                <th class="col-ops">操作</th>
-              </tr>
-            </thead>
-            <tbody id="tbody-new_rules"></tbody>
-          </table>
-        </div>
-      </div>
+    <section class="card" id="detail-card" hidden>
+      <h2 id="detail-title"></h2>
+      <div id="detail-body"></div>
+      <p><a href="/" class="btn-link">← 返回清单</a></p>
     </section>
 
-    <section id="results" hidden>
-      <div class="results-summary" id="results-summary"></div>
-      <div class="result-column">
-        <h2 class="result-title allow-title">新增放行区域（旧：拒绝 → 新：允许）</h2>
-        <div id="allowed-regions"></div>
-      </div>
-      <div class="result-column">
-        <h2 class="result-title block-title">新增阻断区域（旧：允许 → 新：拒绝）</h2>
-        <div id="blocked-regions"></div>
-      </div>
+    <section class="card">
+      <h2>演示样例</h2>
+      <p class="hint">
+        下载样例 ZIP 与独立 JSON 清单后，到
+        <a href="/intake">证据接收页</a> 上传。建议案件号分别使用
+        <code>DEMO-BENIGN</code>、<code>DEMO-EVIL</code>、<code>DEMO-TAMPER</code>，
+        首次提交“预期当前版本”填 <code>0</code>。
+      </p>
+      <div id="samples" class="samples"></div>
     </section>
   </main>
-
-  <footer>
-    <p>区间化计算：先按所有规则边界切分三维基本区间，再逐区间做首条命中求值与差异合并，不枚举任何 IP。</p>
-  </footer>
 
   <script src="/static/app.js"></script>
 </body>
